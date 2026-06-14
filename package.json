@@ -1,0 +1,16 @@
+{
+  "name": "@birk-skyum/geometry-kernel",
+  "version": "0.1.0",
+  "description": "Rust-first geometry kernel focused on deterministic GEOS/JTS-compatible model operations",
+  "author": "Birk Skyum <birk.skyum@pm.me>",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "cargo test",
+    "test:geos": "cargo test --features geos-reference",
+    "check:wasm": "cargo check --no-default-features --features wasm --target wasm32-unknown-unknown",
+    "build:wasm": "wasm-pack build --target web --no-default-features --features wasm --out-dir pkg"
+  },
+  "devDependencies": {}
+}

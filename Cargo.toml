@@ -1,0 +1,30 @@
+[package]
+name = "geometry-kernel"
+version = "0.1.0"
+edition = "2021"
+authors = ["Birk Skyum <birk.skyum@pm.me>"]
+description = "A Rust-first geometry kernel focused on deterministic GEOS/JTS-compatible model operations"
+license = "MIT OR Apache-2.0"
+repository = ""
+readme = "README.md"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["pure-rust"]
+pure-rust = []
+geos-reference = ["dep:geos"]
+wasm = ["dep:wasm-bindgen", "dep:console_error_panic_hook"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+robust = "1.2"
+geos = { version = "10.0", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[dev-dependencies]
+approx = "0.5"
