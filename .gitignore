@@ -1,3 +1,6 @@
 /target/
 /pkg/
+/pkg-debug/
+/node_modules/
+*.tgz
 .DS_Store

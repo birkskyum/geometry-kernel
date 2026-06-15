@@ -1,66 +1,36 @@
 # Implementation Plan
 
-Author: Birk Skyum. Last updated: 2026-06-14.
+Author: Birk Skyum. Last updated: 2026-06-15.
 
 This project is a long-term effort to build a Rust-native geometry kernel with
-GEOS/JTS-compatible behavior for a focused modelling API. The plan is staged so
-the repository becomes useful before the hardest algorithms are complete.
+GEOS/JTS-compatible behavior for a focused geometry API. The plan is staged so
+the repository stays useful before the hardest algorithms are complete.
 
 ## Goal
 
-Build a standalone Rust-first geometry package that can eventually replace
-heavy browser GEOS-WASM usage while preserving model behavior.
+Build a standalone Rust-first geometry package that can reduce browser
+GEOS-WASM usage while preserving documented geometry behavior.
 
 The intended end state:
 
 ```text
 One geometry contract.
 One stable kernel API.
-Multiple backends while developing.
-Pure Rust backend promoted only after fixture parity.
+Multiple reference paths while developing.
+Pure Rust backend promoted only after operation parity.
 ```
 
 ## Non-Goals
 
 - Do not build a full GIS library.
 - Do not expose every GEOS operation.
+- Do not include application-specific logic or validation data.
 - Do not optimize for visual similarity alone.
-- Do not promote a smaller backend if it changes downstream model output.
-
-## Package Shape
-
-```text
-geometry-kernel/
-  Cargo.toml
-  package.json
-  README.md
-  docs/
-    compatibility-contract.md
-    geometry-engine-comparison.md
-    implementation-plan.md
-  src/
-    lib.rs
-    error.rs
-    types.rs
-    precision.rs
-    predicates.rs
-    canonicalize.rs
-    noding.rs
-    polygonize.rs
-    overlay.rs
-    buffer.rs
-    kernel.rs
-    pure_rust.rs
-    geos_reference.rs
-    wasm.rs
-  tests/
-    fixtures/
-    parity/
-```
+- Do not promote a smaller backend if it changes documented geometry behavior.
 
 ## Public API Scope
 
-The package should expose model-level operations, not low-level internals:
+The package should expose focused geometry operations, not broad GIS internals:
 
 ```text
 polygon_area
@@ -73,8 +43,8 @@ difference
 line_polygon_intersections
 ```
 
-Inputs should be planar meter coordinates. Projection and WGS84 geodesic
-concerns should stay outside the kernel.
+Inputs should be planar coordinates. Projection and WGS84 geodesic concerns
+should stay outside the kernel.
 
 ## Phase 1: Contract Before Engine
 
@@ -82,8 +52,7 @@ Define the compatibility contract before optimizing algorithms.
 
 Deliverables:
 
-- operation fixture format
-- model-level fixture format
+- operation case format
 - tolerance policy
 - canonical output policy
 - parity test harness
@@ -91,9 +60,9 @@ Deliverables:
 
 Acceptance criteria:
 
-- fixture tests can compare a candidate backend against a reference backend
-- test failures clearly identify operation, fixture, metric, and tolerance
-- model-level counts are exact, not tolerance-based
+- tests can compare a candidate backend against a reference backend
+- failures clearly identify operation, case, metric, and tolerance
+- operation-level output is canonical and deterministic
 
 ## Phase 2: Repository And API Scaffold
 
@@ -155,7 +124,7 @@ Deliverables:
 
 Acceptance criteria:
 
-- overlapping and crossing segment fixtures pass
+- overlapping and crossing segment cases pass
 - output linework has no un-noded intersections
 - repeated points and collinear overlaps are handled intentionally
 
@@ -174,13 +143,13 @@ Deliverables:
 
 Acceptance criteria:
 
-- polygonization fixtures match the GEOS reference within tolerance
+- polygonization cases match the GEOS reference within tolerance
 - holes are assigned to the correct shells
 - output is stable across input line ordering
 
 ## Phase 6: Overlay
 
-Implement the operations needed by the model.
+Implement the required overlay operations.
 
 Deliverables:
 
@@ -192,8 +161,8 @@ Deliverables:
 
 Acceptance criteria:
 
-- operation fixtures match GEOS reference topology and area tolerances
-- model fixture counts do not regress when overlay is used in shadow mode
+- operation cases match GEOS reference topology and area tolerances
+- unsupported cases fail with typed errors instead of incorrect geometry
 
 ## Phase 7: Buffer
 
@@ -214,10 +183,9 @@ Deliverables:
 
 Acceptance criteria:
 
-- buffer operation fixtures match GEOS reference within tolerance
-- 85-fixture model suite has zero count regressions
-- known sensitive cases, including the inward-margin fixture, pass exactly on
-  row/tree/strip/species counts
+- buffer operation cases match GEOS reference within tolerance
+- collapsed and near-degenerate inputs are handled deterministically
+- output topology is canonicalized
 
 ## Phase 8: GEOS Reference Backend
 
@@ -227,7 +195,7 @@ Deliverables:
 
 - `GeosReferenceKernel`
 - WKT/WKB conversion helpers
-- fixture generation command or test helper
+- case generation command or test helper
 - side-by-side pure Rust vs GEOS tests
 
 Acceptance criteria:
@@ -253,38 +221,22 @@ Acceptance criteria:
 - generated WASM package avoids GEOS dependencies
 - API roundtrip tests pass in Node or browser test harness
 
-## Phase 10: Shadow Integration
+## Phase 10: Downstream Validation
 
-Use the package next to an existing production backend without changing output.
+Use the package next to downstream application code without moving
+application-specific logic or data into this repository.
 
 Deliverables:
 
-- shadow-run adapter
-- comparison logs
-- fixture import/export scripts
-- dashboard or report for parity gaps
+- clear extension points for application adapters
+- deterministic operation outputs
+- diagnostics that make compatibility gaps debuggable
 
 Acceptance criteria:
 
-- candidate backend can be run on real fixtures without affecting behavior
-- parity failures produce actionable diagnostics
-- no default behavior changes until promotion criteria are met
-
-## Phase 11: Promotion
-
-Promote the pure-Rust backend only after it proves itself.
-
-Required promotion gates:
-
-- all operation fixtures pass
-- all model fixtures pass
-- zero row count diffs
-- zero tree count diffs
-- zero strip count diffs
-- zero species count diffs
-- area tolerances accepted and documented
-- WASM build passes
-- browser payload is meaningfully smaller than the GEOS-WASM path
+- this repository remains application-neutral
+- downstream validation can happen outside the public package
+- no default behavior changes until public operation contracts pass
 
 ## Suggested Commit Milestones
 
@@ -296,33 +248,15 @@ Required promotion gates:
 6. Overlay MVP.
 7. Buffer MVP.
 8. GEOS reference backend.
-9. Fixture parity harness.
-10. WASM bindings.
-11. Shadow integration example.
+9. WASM bindings.
+10. Downstream adapter examples that contain no application-specific data.
 
 ## Risk Register
 
 | Risk | Why it matters | Mitigation |
 | --- | --- | --- |
-| Buffer semantics drift | Tiny boundary differences can change model counts | Keep GEOS reference fixtures and model-level count gates |
+| Buffer semantics drift | Tiny boundary differences can materially affect downstream outputs | Keep GEOS reference cases and strict operation contracts |
 | Numeric robustness | Overlay and noding can fail on near-collinear inputs | Use robust predicates and explicit precision models |
-| Scope creep | A full GEOS clone is too large | Keep public API limited to model operations |
-| Premature integration | Incomplete backend could destabilize apps | Shadow mode only until promotion gates pass |
-| WASM payload grows again | Long-term goal includes payload reduction | Track size in CI once WASM package exists |
-
-## First Implementation Slice
-
-The first useful slice should include:
-
-- project scaffold
-- docs in this directory
-- core types
-- precision/canonicalization
-- area and predicates
-- MVP pure-Rust kernel trait implementation
-- GEOS reference feature stub or implementation
-- initial fixtures for buffer-sensitive polygons
-- tests and initial git commit
-
-That creates a stable base for the harder algorithms without tying the project
-to any one application repository.
+| Scope creep | A full GEOS clone is too large | Keep public API limited to focused geometry operations |
+| Application leakage | Domain-specific logic may not belong in a public package | Keep application adapters and validation data outside this repository |
+| WASM payload grows again | Long-term goal includes payload reduction | Track package size during release |

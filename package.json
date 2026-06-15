@@ -1,16 +1,49 @@
 {
-  "name": "@birk-skyum/geometry-kernel",
-  "version": "0.1.0",
-  "description": "Rust-first geometry kernel focused on deterministic GEOS/JTS-compatible model operations",
+  "name": "geometry-kernel",
+  "version": "1.0.0",
+  "description": "A Rust-first geometry kernel for deterministic planar geometry operations",
   "author": "Birk Skyum <birk.skyum@pm.me>",
   "license": "MIT OR Apache-2.0",
   "type": "module",
-  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/birkskyum/geometry-kernel.git"
+  },
+  "bugs": {
+    "url": "https://github.com/birkskyum/geometry-kernel/issues"
+  },
+  "homepage": "https://github.com/birkskyum/geometry-kernel#readme",
+  "keywords": [
+    "geometry",
+    "geo",
+    "wasm",
+    "overlay",
+    "buffer"
+  ],
+  "module": "./pkg/geometry_kernel.js",
+  "types": "./pkg/geometry_kernel.d.ts",
+  "exports": {
+    ".": {
+      "types": "./pkg/geometry_kernel.d.ts",
+      "import": "./pkg/geometry_kernel.js"
+    }
+  },
+  "files": [
+    "pkg",
+    "docs",
+    "README.md",
+    "LICENSE-*"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "test": "cargo test",
     "test:geos": "cargo test --features geos-reference",
+    "test:wasm": "cargo test --features wasm",
     "check:wasm": "cargo check --no-default-features --features wasm --target wasm32-unknown-unknown",
-    "build:wasm": "wasm-pack build --target web --no-default-features --features wasm --out-dir pkg"
+    "build:wasm": "node scripts/build-wasm.mjs"
   },
+  "dependencies": {},
   "devDependencies": {}
 }

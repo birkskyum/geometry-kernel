@@ -1,4 +1,4 @@
-//! Rust-first geometry kernel focused on deterministic model operations.
+//! Rust-first geometry kernel focused on deterministic geometry operations.
 
 pub mod buffer;
 pub mod canonicalize;

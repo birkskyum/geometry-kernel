@@ -1,12 +1,25 @@
 [package]
 name = "geometry-kernel"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 authors = ["Birk Skyum <birk.skyum@pm.me>"]
-description = "A Rust-first geometry kernel focused on deterministic GEOS/JTS-compatible model operations"
+description = "A Rust-first geometry kernel for deterministic planar geometry operations"
 license = "MIT OR Apache-2.0"
-repository = ""
+repository = "https://github.com/birkskyum/geometry-kernel"
+homepage = "https://github.com/birkskyum/geometry-kernel"
+documentation = "https://docs.rs/geometry-kernel"
 readme = "README.md"
+keywords = ["geometry", "geo", "wasm", "overlay", "buffer"]
+categories = ["algorithms", "science::geo", "wasm"]
+include = [
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/LICENSE-*",
+    "/docs/**",
+    "/src/**",
+    "/tests/**",
+]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

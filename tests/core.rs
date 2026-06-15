@@ -107,6 +107,51 @@ fn classifies_points_in_polygon() {
 }
 
 #[test]
+fn classifies_points_against_polygon_holes() {
+    let polygon = Polygon::new(
+        square(0.0, 0.0, 10.0, 10.0).exterior,
+        vec![square(2.0, 2.0, 4.0, 4.0).exterior],
+    );
+
+    assert_eq!(
+        point_in_polygon(Coord::new(1.0, 1.0), &polygon, PrecisionModel::floating()),
+        PointLocation::Interior
+    );
+    assert_eq!(
+        point_in_polygon(Coord::new(3.0, 3.0), &polygon, PrecisionModel::floating()),
+        PointLocation::Exterior
+    );
+    assert_eq!(
+        point_in_polygon(Coord::new(2.0, 3.0), &polygon, PrecisionModel::floating()),
+        PointLocation::Boundary
+    );
+}
+
+#[test]
+fn fixed_precision_snaps_canonicalized_coordinates() {
+    let kernel = PureRustKernel::new(PrecisionModel::fixed(0.5));
+    let polygon = Polygon::new(
+        LinearRing::new(vec![
+            Coord::new(0.24, 0.24),
+            Coord::new(10.24, 0.24),
+            Coord::new(10.24, 9.76),
+            Coord::new(0.24, 9.76),
+            Coord::new(0.24, 0.24),
+        ]),
+        Vec::new(),
+    );
+
+    let canonical = kernel.canonicalize_polygon(&polygon);
+
+    assert_eq!(canonical.exterior.coords[0], Coord::new(0.0, 0.0));
+    assert!(canonical
+        .exterior
+        .coords
+        .iter()
+        .all(|coord| [0.0, 10.0].contains(&coord.x) && [0.0, 10.0].contains(&coord.y)));
+}
+
+#[test]
 fn nodes_crossing_linework() {
     let lines = vec![
         LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(10.0, 10.0)]),
@@ -167,6 +212,31 @@ fn difference_keeps_disjoint_subject() {
 }
 
 #[test]
+fn difference_removes_subject_when_fully_covered() {
+    let kernel = PureRustKernel::default();
+    let subject = multi(square(0.0, 0.0, 10.0, 10.0));
+    let clip = multi(square(-1.0, -1.0, 11.0, 11.0));
+
+    let difference = kernel.difference(&subject, &clip).unwrap();
+
+    assert!(difference.is_empty());
+}
+
+#[test]
+fn selects_largest_polygon_by_area() {
+    let kernel = PureRustKernel::default();
+    let multi_polygon = MultiPolygon::new(vec![
+        square(0.0, 0.0, 2.0, 2.0),
+        square(0.0, 0.0, 10.0, 10.0),
+        square(0.0, 0.0, 4.0, 4.0),
+    ]);
+
+    let largest = kernel.largest_polygon(&multi_polygon).unwrap().unwrap();
+
+    assert_eq!(kernel.polygon_area(&largest).unwrap(), 100.0);
+}
+
+#[test]
 fn buffers_simple_square_inward_and_outward() {
     let kernel = PureRustKernel::default();
     let polygon = square(0.0, 0.0, 10.0, 10.0);
@@ -180,6 +250,18 @@ fn buffers_simple_square_inward_and_outward() {
 
     assert!(kernel.polygon_area(&outward.polygons[0]).unwrap() > 100.0);
     assert!(kernel.polygon_area(&inward.polygons[0]).unwrap() < 100.0);
+}
+
+#[test]
+fn inward_buffer_can_erode_polygon_completely() {
+    let kernel = PureRustKernel::default();
+    let polygon = square(0.0, 0.0, 10.0, 10.0);
+
+    let eroded = kernel
+        .buffer_polygon(&polygon, -20.0, BufferOptions::default())
+        .unwrap();
+
+    assert!(eroded.is_empty());
 }
 
 #[test]
@@ -206,4 +288,17 @@ fn finds_line_polygon_boundary_intersections() {
     assert_eq!(intersections.len(), 2);
     assert!(intersections.contains(&Coord::new(0.0, 5.0)));
     assert!(intersections.contains(&Coord::new(10.0, 5.0)));
+}
+
+#[test]
+fn deduplicates_line_polygon_intersections_on_overlapping_edge() {
+    let kernel = PureRustKernel::default();
+    let polygon = square(0.0, 0.0, 10.0, 10.0);
+    let line = LineString::new(vec![Coord::new(-1.0, 0.0), Coord::new(11.0, 0.0)]);
+
+    let intersections = kernel.line_polygon_intersections(&line, &polygon).unwrap();
+
+    assert_eq!(intersections.len(), 2);
+    assert!(intersections.contains(&Coord::new(0.0, 0.0)));
+    assert!(intersections.contains(&Coord::new(10.0, 0.0)));
 }

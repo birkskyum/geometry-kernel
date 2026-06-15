@@ -49,6 +49,11 @@ pub fn intersection_json(subject_json: &str, clip_json: &str) -> String {
     })
 }
 
+#[wasm_bindgen]
+pub fn version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 fn encode_result<T, F>(operation: F) -> String
 where
     T: Serialize,
