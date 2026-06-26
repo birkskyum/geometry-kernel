@@ -22,6 +22,10 @@ fn square(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon {
     )
 }
 
+fn rectangle(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Polygon {
+    square(min_x, min_y, max_x, max_y)
+}
+
 fn multi(polygon: Polygon) -> MultiPolygon {
     MultiPolygon::new(vec![polygon])
 }
@@ -197,6 +201,36 @@ fn intersects_convex_polygons() {
         kernel.polygon_area(&intersection.polygons[0]).unwrap(),
         25.0
     );
+}
+
+#[test]
+fn intersects_concave_subject_as_multiple_polygons() {
+    let kernel = PureRustKernel::default();
+    let subject = multi(Polygon::new(
+        LinearRing::new(vec![
+            Coord::new(0.0, 0.0),
+            Coord::new(6.0, 0.0),
+            Coord::new(6.0, 2.0),
+            Coord::new(2.0, 2.0),
+            Coord::new(2.0, 4.0),
+            Coord::new(6.0, 4.0),
+            Coord::new(6.0, 6.0),
+            Coord::new(0.0, 6.0),
+            Coord::new(0.0, 0.0),
+        ]),
+        Vec::new(),
+    ));
+    let clip = multi(rectangle(3.0, -1.0, 5.0, 7.0));
+
+    let intersection = kernel.intersection(&subject, &clip).unwrap();
+
+    assert_eq!(intersection.polygons.len(), 2);
+    let area = intersection
+        .polygons
+        .iter()
+        .map(|polygon| kernel.polygon_area(polygon).unwrap())
+        .sum::<f64>();
+    assert_eq!(area, 8.0);
 }
 
 #[test]
