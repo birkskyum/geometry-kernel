@@ -101,6 +101,21 @@ fn detects_point_and_overlap_segment_intersections() {
 }
 
 #[test]
+fn detects_near_endpoint_crossing_with_fixed_precision() {
+    let precision = PrecisionModel::fixed(1.0e-11);
+
+    let intersection = segment_intersection(
+        Coord::new(9.97643221387, 55.970333086009994),
+        Coord::new(9.97643308689, 55.97033359586),
+        Coord::new(9.97643270445989, 55.97033374354527),
+        Coord::new(9.976433617511823, 55.970333256150404),
+        precision,
+    );
+
+    assert!(matches!(intersection, Some(SegmentIntersection::Point(_))));
+}
+
+#[test]
 fn classifies_points_in_polygon() {
     let polygon = square(0.0, 0.0, 10.0, 10.0);
 
@@ -287,6 +302,18 @@ fn difference_can_split_subject() {
 
     assert_eq!(difference.polygons.len(), 2);
     assert_eq!(multi_area(&kernel, &difference), 80.0);
+}
+
+#[test]
+fn difference_merges_adjacent_faces_after_partial_clip() {
+    let kernel = PureRustKernel::default();
+    let subject = multi(square(0.0, 0.0, 10.0, 10.0));
+    let clip = multi(rectangle(5.0, 2.0, 15.0, 8.0));
+
+    let difference = kernel.difference(&subject, &clip).unwrap();
+
+    assert_eq!(difference.polygons.len(), 1);
+    assert_eq!(kernel.polygon_area(&difference.polygons[0]).unwrap(), 70.0);
 }
 
 #[test]

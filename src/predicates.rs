@@ -47,7 +47,7 @@ pub fn is_ring_ccw(ring: &LinearRing) -> bool {
 }
 
 pub fn point_on_segment(point: Coord, a: Coord, b: Coord, precision: PrecisionModel) -> bool {
-    if orientation(a, b, point).abs() > precision.epsilon() {
+    if orientation(a, b, point).abs() > orientation_epsilon(a, b, point, precision) {
         return false;
     }
 
@@ -122,34 +122,65 @@ pub fn segment_intersection(
     let o2 = orientation(a1, a2, b2);
     let o3 = orientation(b1, b2, a1);
     let o4 = orientation(b1, b2, a2);
-    let eps = precision.epsilon();
+    let s1 = orientation_sign(o1, orientation_epsilon(a1, a2, b1, precision));
+    let s2 = orientation_sign(o2, orientation_epsilon(a1, a2, b2, precision));
+    let s3 = orientation_sign(o3, orientation_epsilon(b1, b2, a1, precision));
+    let s4 = orientation_sign(o4, orientation_epsilon(b1, b2, a2, precision));
 
-    if o1.abs() <= eps && o2.abs() <= eps && o3.abs() <= eps && o4.abs() <= eps {
+    if s1 == 0 && s2 == 0 && s3 == 0 && s4 == 0 {
         return collinear_overlap(a1, a2, b1, b2, precision);
     }
 
-    if (o1 > eps && o2 > eps) || (o1 < -eps && o2 < -eps) {
+    if s1 != 0 && s1 == s2 {
         return None;
     }
-    if (o3 > eps && o4 > eps) || (o3 < -eps && o4 < -eps) {
-        return None;
-    }
-
-    let denom = (a1.x - a2.x) * (b1.y - b2.y) - (a1.y - a2.y) * (b1.x - b2.x);
-    if denom.abs() <= eps {
+    if s3 != 0 && s3 == s4 {
         return None;
     }
 
-    let a_cross = a1.x * a2.y - a1.y * a2.x;
-    let b_cross = b1.x * b2.y - b1.y * b2.x;
-    let x = (a_cross * (b1.x - b2.x) - (a1.x - a2.x) * b_cross) / denom;
-    let y = (a_cross * (b1.y - b2.y) - (a1.y - a2.y) * b_cross) / denom;
-    let point = precision.snap_coord(Coord::new(x, y));
+    let r = Coord::new(a2.x - a1.x, a2.y - a1.y);
+    let s = Coord::new(b2.x - b1.x, b2.y - b1.y);
+    let denom = cross(r, s);
+    if denom.abs() <= cross_epsilon(r, s, precision) {
+        return None;
+    }
+
+    let q_minus_p = Coord::new(b1.x - a1.x, b1.y - a1.y);
+    let t = cross(q_minus_p, s) / denom;
+    let point = precision.snap_coord(Coord::new(a1.x + t * r.x, a1.y + t * r.y));
 
     if point_on_segment(point, a1, a2, precision) && point_on_segment(point, b1, b2, precision) {
         Some(SegmentIntersection::Point(point))
     } else {
         None
+    }
+}
+
+fn cross(a: Coord, b: Coord) -> f64 {
+    a.x * b.y - a.y * b.x
+}
+
+fn orientation_epsilon(a: Coord, b: Coord, c: Coord, precision: PrecisionModel) -> f64 {
+    let ab = a.distance(b);
+    let ac = a.distance(c);
+    precision.epsilon() * (ab + ac).max(f64::EPSILON)
+}
+
+fn cross_epsilon(a: Coord, b: Coord, precision: PrecisionModel) -> f64 {
+    precision.epsilon() * (vector_length(a) + vector_length(b)).max(f64::EPSILON)
+}
+
+fn vector_length(vector: Coord) -> f64 {
+    (vector.x * vector.x + vector.y * vector.y).sqrt()
+}
+
+fn orientation_sign(value: f64, epsilon: f64) -> i8 {
+    if value > epsilon {
+        1
+    } else if value < -epsilon {
+        -1
+    } else {
+        0
     }
 }
 
@@ -199,7 +230,7 @@ pub fn is_convex_ring(ring: &LinearRing, precision: PrecisionModel) -> bool {
         let b = coords[(i + 1) % (coords.len() - 1)];
         let c = coords[(i + 2) % (coords.len() - 1)];
         let o = orientation(a, b, c);
-        if o.abs() <= precision.epsilon() {
+        if o.abs() <= orientation_epsilon(a, b, c, precision) {
             continue;
         }
         let current = if o > 0.0 { 1 } else { -1 };

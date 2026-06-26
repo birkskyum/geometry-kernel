@@ -1,8 +1,12 @@
+use std::collections::HashMap;
+
 use crate::canonicalize::{canonicalize_multi_polygon, canonicalize_polygon};
 use crate::error::Result;
 use crate::noding::node_lines;
 use crate::precision::PrecisionModel;
-use crate::predicates::{point_in_polygon, polygon_area, signed_area_coords, PointLocation};
+use crate::predicates::{
+    point_in_polygon, point_in_ring, polygon_area, signed_area_coords, PointLocation,
+};
 use crate::types::{BBox, Coord, LineString, LinearRing, MultiPolygon, Polygon};
 
 pub fn intersection(
@@ -47,17 +51,21 @@ fn overlay(
     let faces = overlay_faces(subject, clip, precision);
     let mut selected = Vec::new();
     let mut unselected = Vec::new();
-
     for face in faces {
-        let Some(point) = representative_point(&face, precision) else {
+        let points = representative_points(&face, precision);
+        if points.is_empty() {
             continue;
         };
 
-        let in_subject = multi_polygon_contains_point(subject, point, precision);
-        let in_clip = multi_polygon_contains_point(clip, point, precision);
         let is_selected = match operation {
-            OverlayOperation::Intersection => in_subject && in_clip,
-            OverlayOperation::Difference => in_subject && !in_clip,
+            OverlayOperation::Intersection => points.iter().any(|point| {
+                multi_polygon_contains_point(subject, *point, precision)
+                    && multi_polygon_contains_point(clip, *point, precision)
+            }),
+            OverlayOperation::Difference => points.iter().any(|point| {
+                multi_polygon_contains_point(subject, *point, precision)
+                    && !multi_polygon_contains_point(clip, *point, precision)
+            }),
         };
 
         if is_selected {
@@ -102,7 +110,12 @@ fn assemble_selected_faces(
     unselected: &[Polygon],
     precision: PrecisionModel,
 ) -> MultiPolygon {
-    let mut output = selected;
+    let mut output = merge_selected_faces(&selected, precision);
+    if output.is_empty() {
+        output = selected;
+    }
+    output = remove_repeated_exterior_loops(output, precision);
+    output = attach_nested_shells_as_holes(output, precision);
 
     for hole_face in unselected {
         let Some(point) = representative_point(hole_face, precision) else {
@@ -116,10 +129,208 @@ fn assemble_selected_faces(
             continue;
         }
 
+        if !ring_strictly_inside_polygon(&hole_face.exterior, &output[output_index], precision) {
+            continue;
+        }
+
         output[output_index].holes.push(hole_face.exterior.clone());
     }
 
     canonicalize_multi_polygon(&MultiPolygon::new(output), precision)
+}
+
+fn remove_repeated_exterior_loops(
+    polygons: Vec<Polygon>,
+    precision: PrecisionModel,
+) -> Vec<Polygon> {
+    polygons
+        .into_iter()
+        .map(|mut polygon| {
+            polygon.exterior = remove_same_orientation_repeated_loops(&polygon.exterior, precision);
+            polygon
+        })
+        .collect()
+}
+
+fn remove_same_orientation_repeated_loops(
+    ring: &LinearRing,
+    precision: PrecisionModel,
+) -> LinearRing {
+    let mut out = Vec::<Coord>::new();
+    let mut indexes = HashMap::<CoordKey, usize>::new();
+
+    for coord in ring.coords.iter().copied() {
+        let coord = precision.snap_coord(coord);
+        if out
+            .last()
+            .is_some_and(|previous| precision.same_coord(*previous, coord))
+        {
+            continue;
+        }
+        if !out.is_empty() && precision.same_coord(out[0], coord) {
+            continue;
+        }
+
+        let key = CoordKey::new(coord);
+        if let Some(previous_index) = indexes.get(&key).copied() {
+            let mut loop_coords = out[previous_index..].to_vec();
+            loop_coords.push(out[previous_index]);
+            if signed_area_coords(&loop_coords) > precision.epsilon() {
+                for removed in out.drain(previous_index + 1..) {
+                    indexes.remove(&CoordKey::new(removed));
+                }
+                continue;
+            }
+        }
+
+        indexes.insert(key, out.len());
+        out.push(coord);
+    }
+
+    if out.len() < 3 {
+        return LinearRing { coords: Vec::new() };
+    }
+
+    out.push(out[0]);
+    LinearRing::new(out)
+}
+
+fn ring_strictly_inside_polygon(
+    ring: &LinearRing,
+    polygon: &Polygon,
+    precision: PrecisionModel,
+) -> bool {
+    ring.coords
+        .iter()
+        .take(ring.coords.len().saturating_sub(1))
+        .all(|coord| {
+            matches!(
+                point_in_polygon(*coord, polygon, precision),
+                PointLocation::Interior
+            )
+        })
+}
+
+fn attach_nested_shells_as_holes(
+    mut polygons: Vec<Polygon>,
+    precision: PrecisionModel,
+) -> Vec<Polygon> {
+    if polygons.len() <= 1 {
+        return polygons;
+    }
+
+    let mut remove = vec![false; polygons.len()];
+    let mut hole_assignments = Vec::<(usize, LinearRing)>::new();
+
+    for inner_index in 0..polygons.len() {
+        let inner_area = polygon_area(&polygons[inner_index]);
+        let Some(point) = representative_point(&polygons[inner_index], precision) else {
+            continue;
+        };
+
+        let Some(outer_index) = polygons
+            .iter()
+            .enumerate()
+            .filter(|(outer_index, outer)| {
+                *outer_index != inner_index
+                    && polygon_area(outer) > inner_area
+                    && matches!(
+                        point_in_ring(point, &outer.exterior, precision),
+                        PointLocation::Interior
+                    )
+            })
+            .min_by(|(_, left), (_, right)| {
+                polygon_area(left)
+                    .partial_cmp(&polygon_area(right))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(outer_index, _)| outer_index)
+        else {
+            continue;
+        };
+
+        remove[inner_index] = true;
+        hole_assignments.push((outer_index, polygons[inner_index].exterior.clone()));
+    }
+
+    for (outer_index, hole) in hole_assignments {
+        if !remove[outer_index] {
+            polygons[outer_index].holes.push(hole);
+        }
+    }
+
+    polygons
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, polygon)| (!remove[index]).then_some(polygon))
+        .collect()
+}
+
+fn merge_selected_faces(selected: &[Polygon], precision: PrecisionModel) -> Vec<Polygon> {
+    if selected.len() <= 1 {
+        return selected.to_vec();
+    }
+
+    let mut edge_counts = HashMap::<EdgeKey, BoundaryEdge>::new();
+    for face in selected {
+        for (start, end) in face.exterior.segments() {
+            let key = EdgeKey::new(start, end);
+            edge_counts
+                .entry(key)
+                .and_modify(|edge| edge.count += 1)
+                .or_insert(BoundaryEdge {
+                    start,
+                    end,
+                    count: 1,
+                });
+        }
+    }
+
+    let boundary_lines = edge_counts
+        .into_values()
+        .filter(|edge| edge.count == 1)
+        .map(|edge| LineString::new(vec![edge.start, edge.end]))
+        .collect::<Vec<_>>();
+
+    if boundary_lines.is_empty() {
+        return Vec::new();
+    }
+
+    Arrangement::from_lines(&boundary_lines, precision).polygonize_faces(precision)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BoundaryEdge {
+    start: Coord,
+    end: Coord,
+    count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct EdgeKey(CoordKey, CoordKey);
+
+impl EdgeKey {
+    fn new(start: Coord, end: Coord) -> Self {
+        let start = CoordKey::new(start);
+        let end = CoordKey::new(end);
+        if start <= end {
+            Self(start, end)
+        } else {
+            Self(end, start)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct CoordKey(u64, u64);
+
+impl CoordKey {
+    fn new(coord: Coord) -> Self {
+        Self(
+            normalize_zero(coord.x).to_bits(),
+            normalize_zero(coord.y).to_bits(),
+        )
+    }
 }
 
 fn containing_polygon_index(
@@ -201,6 +412,7 @@ impl Arrangement {
     fn polygonize_faces(&self, precision: PrecisionModel) -> Vec<Polygon> {
         let mut visited = Vec::<(usize, usize)>::new();
         let mut polygons = Vec::new();
+        let mut reversed_polygons = Vec::new();
 
         for start in 0..self.vertices.len() {
             for &end in &self.adjacency[start] {
@@ -219,7 +431,24 @@ impl Arrangement {
                     .collect::<Vec<_>>();
                 coords.push(coords[0]);
 
-                if signed_area_coords(&coords) <= precision.epsilon() {
+                let signed_area = signed_area_coords(&coords);
+                if signed_area.abs() <= precision.epsilon() {
+                    continue;
+                }
+
+                if signed_area < 0.0 {
+                    coords.reverse();
+                    let polygon = canonicalize_polygon(
+                        &Polygon::new(LinearRing::new(coords), Vec::new()),
+                        precision,
+                    );
+                    if !polygon.is_empty()
+                        && !reversed_polygons
+                            .iter()
+                            .any(|existing| existing == &polygon)
+                    {
+                        reversed_polygons.push(polygon);
+                    }
                     continue;
                 }
 
@@ -233,7 +462,11 @@ impl Arrangement {
             }
         }
 
-        polygons
+        if polygons.is_empty() {
+            reversed_polygons
+        } else {
+            polygons
+        }
     }
 
     fn walk_face(&self, start: usize, end: usize, visited: &mut Vec<(usize, usize)>) -> Vec<usize> {
@@ -310,7 +543,56 @@ fn directed_edge_seen(visited: &[(usize, usize)], start: usize, end: usize) -> b
     visited.iter().any(|edge| edge.0 == start && edge.1 == end)
 }
 
+fn normalize_zero(value: f64) -> f64 {
+    if value == 0.0 {
+        0.0
+    } else {
+        value
+    }
+}
+
 fn representative_point(polygon: &Polygon, precision: PrecisionModel) -> Option<Coord> {
+    representative_points(polygon, precision).into_iter().next()
+}
+
+fn representative_points(polygon: &Polygon, precision: PrecisionModel) -> Vec<Coord> {
+    let mut points = Vec::new();
+
+    if let Some(point) = triangle_fan_representative_point(polygon, precision) {
+        push_unique_point(&mut points, point, precision);
+    }
+
+    if let Some(point) = polygon_centroid(polygon) {
+        if matches!(
+            point_in_polygon(point, polygon, precision),
+            PointLocation::Interior
+        ) {
+            push_unique_point(&mut points, point, precision);
+        }
+    }
+
+    if let Some(bbox) = polygon_bbox(polygon) {
+        let point = Coord::new(
+            (bbox.min.x + bbox.max.x) * 0.5,
+            (bbox.min.y + bbox.max.y) * 0.5,
+        );
+        if matches!(
+            point_in_polygon(point, polygon, precision),
+            PointLocation::Interior
+        ) {
+            push_unique_point(&mut points, point, precision);
+        }
+    }
+
+    for point in edge_probe_representative_points(polygon, precision) {
+        push_unique_point(&mut points, point, precision);
+    }
+
+    points
+}
+
+fn edge_probe_representative_points(polygon: &Polygon, precision: PrecisionModel) -> Vec<Coord> {
+    let mut points = Vec::new();
     let extent = polygon_bbox(polygon)
         .map(|bbox| {
             let width = bbox.max.x - bbox.min.x;
@@ -318,7 +600,11 @@ fn representative_point(polygon: &Polygon, precision: PrecisionModel) -> Option<
             (width * width + height * height).sqrt()
         })
         .unwrap_or(1.0);
-    let offset = (extent * 1.0e-9).max(precision.epsilon() * 10.0);
+    let offsets = [
+        (extent * 1.0e-9).max(precision.epsilon() * 10.0),
+        (extent * 1.0e-7).max(precision.epsilon() * 10.0),
+        (extent * 1.0e-5).max(precision.epsilon() * 10.0),
+    ];
 
     for (start, end) in polygon.exterior.segments() {
         let dx = end.x - start.x;
@@ -330,15 +616,80 @@ fn representative_point(polygon: &Polygon, precision: PrecisionModel) -> Option<
 
         let midpoint = Coord::new((start.x + end.x) * 0.5, (start.y + end.y) * 0.5);
         let normal = Coord::new(-dy / length, dx / length);
-        let point = Coord::new(
-            midpoint.x + normal.x * offset,
-            midpoint.y + normal.y * offset,
+        for offset in offsets {
+            for direction in [1.0, -1.0] {
+                let point = Coord::new(
+                    midpoint.x + normal.x * offset * direction,
+                    midpoint.y + normal.y * offset * direction,
+                );
+                if matches!(
+                    point_in_polygon(point, polygon, precision),
+                    PointLocation::Interior
+                ) {
+                    push_unique_point(&mut points, point, precision);
+                }
+            }
+        }
+    }
+
+    points
+}
+
+fn push_unique_point(points: &mut Vec<Coord>, point: Coord, precision: PrecisionModel) {
+    if points
+        .iter()
+        .all(|existing| !precision.same_coord(*existing, point))
+    {
+        points.push(point);
+    }
+}
+
+fn polygon_centroid(polygon: &Polygon) -> Option<Coord> {
+    let coords = &polygon.exterior.coords;
+    if coords.len() < 4 {
+        return None;
+    }
+
+    let mut twice_area = 0.0;
+    let mut centroid_x = 0.0;
+    let mut centroid_y = 0.0;
+    for pair in coords.windows(2) {
+        let cross = pair[0].x * pair[1].y - pair[1].x * pair[0].y;
+        twice_area += cross;
+        centroid_x += (pair[0].x + pair[1].x) * cross;
+        centroid_y += (pair[0].y + pair[1].y) * cross;
+    }
+
+    if twice_area.abs() <= f64::EPSILON {
+        return None;
+    }
+
+    Some(Coord::new(
+        centroid_x / (3.0 * twice_area),
+        centroid_y / (3.0 * twice_area),
+    ))
+}
+
+fn triangle_fan_representative_point(
+    polygon: &Polygon,
+    precision: PrecisionModel,
+) -> Option<Coord> {
+    let coords = &polygon.exterior.coords;
+    if coords.len() < 4 {
+        return None;
+    }
+
+    let anchor = coords[0];
+    for pair in coords[1..coords.len() - 1].windows(2) {
+        let centroid = Coord::new(
+            (anchor.x + pair[0].x + pair[1].x) / 3.0,
+            (anchor.y + pair[0].y + pair[1].y) / 3.0,
         );
         if matches!(
-            point_in_polygon(point, polygon, precision),
+            point_in_polygon(centroid, polygon, precision),
             PointLocation::Interior
         ) {
-            return Some(point);
+            return Some(centroid);
         }
     }
 
