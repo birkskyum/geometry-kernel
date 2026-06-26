@@ -1,6 +1,6 @@
 {
   "name": "geometry-kernel",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "A Rust-first geometry kernel for deterministic planar geometry operations",
   "author": "Birk Skyum <birk.skyum@pm.me>",
   "license": "MIT OR Apache-2.0",

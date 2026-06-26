@@ -1,8 +1,8 @@
 use crate::canonicalize::{canonicalize_multi_polygon, canonicalize_polygon};
-use crate::error::{GeometryError, Result};
+use crate::error::Result;
 use crate::noding::node_lines;
 use crate::precision::PrecisionModel;
-use crate::predicates::{is_convex_ring, point_in_polygon, signed_area_coords, PointLocation};
+use crate::predicates::{point_in_polygon, polygon_area, signed_area_coords, PointLocation};
 use crate::types::{BBox, Coord, LineString, LinearRing, MultiPolygon, Polygon};
 
 pub fn intersection(
@@ -10,22 +10,7 @@ pub fn intersection(
     clip: &MultiPolygon,
     precision: PrecisionModel,
 ) -> Result<MultiPolygon> {
-    let mut out = Vec::new();
-
-    for subject_polygon in &subject.polygons {
-        for clip_polygon in &clip.polygons {
-            out.extend(polygon_intersection(
-                subject_polygon,
-                clip_polygon,
-                precision,
-            )?);
-        }
-    }
-
-    Ok(canonicalize_multi_polygon(
-        &MultiPolygon::new(out),
-        precision,
-    ))
+    overlay(subject, clip, precision, OverlayOperation::Intersection)
 }
 
 pub fn difference(
@@ -33,112 +18,145 @@ pub fn difference(
     clip: &MultiPolygon,
     precision: PrecisionModel,
 ) -> Result<MultiPolygon> {
-    let mut out = Vec::new();
-
-    for subject_polygon in &subject.polygons {
-        let subject_bbox = polygon_bbox(subject_polygon);
-        let mut changed = false;
-        let mut fully_covered = false;
-
-        for clip_polygon in &clip.polygons {
-            let Some(subject_bbox) = subject_bbox else {
-                continue;
-            };
-            let Some(clip_bbox) = polygon_bbox(clip_polygon) else {
-                continue;
-            };
-
-            if !subject_bbox.intersects(clip_bbox) {
-                continue;
-            }
-
-            changed = true;
-            if polygon_vertices_inside(subject_polygon, clip_polygon, precision) {
-                fully_covered = true;
-                break;
-            }
-        }
-
-        if !changed {
-            out.push(subject_polygon.clone());
-        } else if !fully_covered {
-            return Err(GeometryError::Unsupported(
-                "pure Rust difference currently supports disjoint or fully covered polygons"
-                    .to_owned(),
-            ));
-        }
-    }
-
-    Ok(canonicalize_multi_polygon(
-        &MultiPolygon::new(out),
-        precision,
-    ))
+    overlay(subject, clip, precision, OverlayOperation::Difference)
 }
 
-fn polygon_intersection(
-    subject: &Polygon,
-    clip: &Polygon,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverlayOperation {
+    Intersection,
+    Difference,
+}
+
+fn overlay(
+    subject: &MultiPolygon,
+    clip: &MultiPolygon,
     precision: PrecisionModel,
-) -> Result<Vec<Polygon>> {
-    if subject.is_empty() || clip.is_empty() {
-        return Ok(Vec::new());
-    }
-    if !subject.holes.is_empty() || !clip.holes.is_empty() {
-        return Err(GeometryError::Unsupported(
-            "pure Rust intersection currently supports polygons without holes".to_owned(),
-        ));
-    }
-    if !is_convex_ring(&clip.exterior, precision) {
-        return Err(GeometryError::Unsupported(
-            "pure Rust intersection currently requires a convex clip polygon".to_owned(),
-        ));
+    operation: OverlayOperation,
+) -> Result<MultiPolygon> {
+    if subject.is_empty() {
+        return Ok(MultiPolygon::empty());
     }
 
-    Ok(intersection_faces(subject, clip, precision))
+    if clip.is_empty() {
+        return Ok(match operation {
+            OverlayOperation::Intersection => MultiPolygon::empty(),
+            OverlayOperation::Difference => canonicalize_multi_polygon(subject, precision),
+        });
+    }
+
+    let faces = overlay_faces(subject, clip, precision);
+    let mut selected = Vec::new();
+    let mut unselected = Vec::new();
+
+    for face in faces {
+        let Some(point) = representative_point(&face, precision) else {
+            continue;
+        };
+
+        let in_subject = multi_polygon_contains_point(subject, point, precision);
+        let in_clip = multi_polygon_contains_point(clip, point, precision);
+        let is_selected = match operation {
+            OverlayOperation::Intersection => in_subject && in_clip,
+            OverlayOperation::Difference => in_subject && !in_clip,
+        };
+
+        if is_selected {
+            selected.push(face);
+        } else {
+            unselected.push(face);
+        }
+    }
+
+    Ok(assemble_selected_faces(selected, &unselected, precision))
 }
 
-fn polygon_vertices_inside(subject: &Polygon, clip: &Polygon, precision: PrecisionModel) -> bool {
-    subject.exterior.coords[..subject.exterior.coords.len().saturating_sub(1)]
+fn overlay_faces(
+    subject: &MultiPolygon,
+    clip: &MultiPolygon,
+    precision: PrecisionModel,
+) -> Vec<Polygon> {
+    let lines = multi_polygon_lines(subject)
+        .into_iter()
+        .chain(multi_polygon_lines(clip))
+        .collect::<Vec<_>>();
+    let noded = node_lines(&lines, precision);
+    let arrangement = Arrangement::from_lines(&noded.lines, precision);
+    arrangement.polygonize_faces(precision)
+}
+
+fn multi_polygon_lines(multi_polygon: &MultiPolygon) -> Vec<LineString> {
+    multi_polygon
+        .polygons
         .iter()
-        .all(|point| {
+        .flat_map(|polygon| {
+            std::iter::once(&polygon.exterior)
+                .chain(polygon.holes.iter())
+                .filter(|ring| ring.coords.len() >= 4)
+                .map(|ring| LineString::new(ring.coords.clone()))
+        })
+        .collect()
+}
+
+fn assemble_selected_faces(
+    selected: Vec<Polygon>,
+    unselected: &[Polygon],
+    precision: PrecisionModel,
+) -> MultiPolygon {
+    let mut output = selected;
+
+    for hole_face in unselected {
+        let Some(point) = representative_point(hole_face, precision) else {
+            continue;
+        };
+        let Some(output_index) = containing_polygon_index(&output, point, precision) else {
+            continue;
+        };
+
+        if polygon_area(hole_face) >= polygon_area(&output[output_index]) {
+            continue;
+        }
+
+        output[output_index].holes.push(hole_face.exterior.clone());
+    }
+
+    canonicalize_multi_polygon(&MultiPolygon::new(output), precision)
+}
+
+fn containing_polygon_index(
+    polygons: &[Polygon],
+    point: Coord,
+    precision: PrecisionModel,
+) -> Option<usize> {
+    polygons
+        .iter()
+        .enumerate()
+        .filter(|(_, polygon)| {
             matches!(
-                point_in_polygon(*point, clip, precision),
-                PointLocation::Interior | PointLocation::Boundary
+                point_in_polygon(point, polygon, precision),
+                PointLocation::Interior
             )
         })
+        .min_by(|(_, left), (_, right)| {
+            polygon_area(left)
+                .partial_cmp(&polygon_area(right))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(index, _)| index)
+}
+
+fn multi_polygon_contains_point(
+    multi_polygon: &MultiPolygon,
+    point: Coord,
+    precision: PrecisionModel,
+) -> bool {
+    multi_polygon
+        .polygons
+        .iter()
+        .any(|polygon| polygon_contains_point(polygon, point, precision))
 }
 
 fn polygon_bbox(polygon: &Polygon) -> Option<BBox> {
     BBox::from_coords(&polygon.exterior.coords)
-}
-
-fn intersection_faces(
-    subject: &Polygon,
-    clip: &Polygon,
-    precision: PrecisionModel,
-) -> Vec<Polygon> {
-    let lines = [
-        LineString::new(subject.exterior.coords.clone()),
-        LineString::new(clip.exterior.coords.clone()),
-    ];
-    let noded = node_lines(&lines, precision);
-    let arrangement = Arrangement::from_lines(&noded.lines, precision);
-    let mut out = Vec::new();
-
-    for polygon in arrangement.polygonize_faces(precision) {
-        let Some(point) = representative_point(&polygon, precision) else {
-            continue;
-        };
-
-        if polygon_contains_point(subject, point, precision)
-            && polygon_contains_point(clip, point, precision)
-            && !out.iter().any(|existing| existing == &polygon)
-        {
-            out.push(polygon);
-        }
-    }
-
-    out
 }
 
 #[derive(Debug, Clone)]

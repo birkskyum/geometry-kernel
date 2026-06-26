@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "geometry-kernel"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "approx",
  "console_error_panic_hook",

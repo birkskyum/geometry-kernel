@@ -30,6 +30,14 @@ fn multi(polygon: Polygon) -> MultiPolygon {
     MultiPolygon::new(vec![polygon])
 }
 
+fn multi_area(kernel: &PureRustKernel, multi_polygon: &MultiPolygon) -> f64 {
+    multi_polygon
+        .polygons
+        .iter()
+        .map(|polygon| kernel.polygon_area(polygon).unwrap())
+        .sum()
+}
+
 #[test]
 fn computes_polygon_area_with_holes() {
     let polygon = Polygon::new(
@@ -254,6 +262,69 @@ fn difference_removes_subject_when_fully_covered() {
     let difference = kernel.difference(&subject, &clip).unwrap();
 
     assert!(difference.is_empty());
+}
+
+#[test]
+fn difference_subtracts_contained_polygon_as_hole() {
+    let kernel = PureRustKernel::default();
+    let subject = multi(square(0.0, 0.0, 10.0, 10.0));
+    let clip = multi(square(2.0, 2.0, 8.0, 8.0));
+
+    let difference = kernel.difference(&subject, &clip).unwrap();
+
+    assert_eq!(difference.polygons.len(), 1);
+    assert_eq!(difference.polygons[0].holes.len(), 1);
+    assert_eq!(kernel.polygon_area(&difference.polygons[0]).unwrap(), 64.0);
+}
+
+#[test]
+fn difference_can_split_subject() {
+    let kernel = PureRustKernel::default();
+    let subject = multi(square(0.0, 0.0, 10.0, 10.0));
+    let clip = multi(rectangle(4.0, -1.0, 6.0, 11.0));
+
+    let difference = kernel.difference(&subject, &clip).unwrap();
+
+    assert_eq!(difference.polygons.len(), 2);
+    assert_eq!(multi_area(&kernel, &difference), 80.0);
+}
+
+#[test]
+fn intersection_preserves_clip_holes() {
+    let kernel = PureRustKernel::default();
+    let subject = multi(square(-1.0, -1.0, 11.0, 11.0));
+    let clip = multi(Polygon::new(
+        square(0.0, 0.0, 10.0, 10.0).exterior,
+        vec![square(2.0, 2.0, 8.0, 8.0).exterior],
+    ));
+
+    let intersection = kernel.intersection(&subject, &clip).unwrap();
+
+    assert_eq!(intersection.polygons.len(), 1);
+    assert_eq!(intersection.polygons[0].holes.len(), 1);
+    assert_eq!(
+        kernel.polygon_area(&intersection.polygons[0]).unwrap(),
+        64.0
+    );
+}
+
+#[test]
+fn line_buffer_difference_creates_annulus() {
+    let kernel = PureRustKernel::default();
+    let line = LineString::new(vec![Coord::new(0.0, 0.0), Coord::new(10.0, 0.0)]);
+    let outer = kernel
+        .line_buffer(&line, 2.0, BufferOptions::default())
+        .unwrap();
+    let inner = kernel
+        .line_buffer(&line, 1.0, BufferOptions::default())
+        .unwrap();
+
+    let annulus = kernel.difference(&outer, &inner).unwrap();
+    let expected_area = multi_area(&kernel, &outer) - multi_area(&kernel, &inner);
+
+    assert_eq!(annulus.polygons.len(), 1);
+    assert_eq!(annulus.polygons[0].holes.len(), 1);
+    assert!((multi_area(&kernel, &annulus) - expected_area).abs() < 1.0e-6);
 }
 
 #[test]
