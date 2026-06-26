@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::canonicalize::{canonicalize_multi_polygon, canonicalize_polygon};
 use crate::error::Result;
@@ -379,12 +379,25 @@ struct Arrangement {
 impl Arrangement {
     fn from_lines(lines: &[LineString], precision: PrecisionModel) -> Self {
         let mut vertices = Vec::new();
+        let mut vertex_indexes = HashMap::<CoordKey, usize>::new();
         let mut adjacency: Vec<Vec<usize>> = Vec::new();
 
         for line in lines {
             for (start, end) in line.segments() {
-                let start_index = vertex_index(&mut vertices, &mut adjacency, start, precision);
-                let end_index = vertex_index(&mut vertices, &mut adjacency, end, precision);
+                let start_index = vertex_index(
+                    &mut vertices,
+                    &mut vertex_indexes,
+                    &mut adjacency,
+                    start,
+                    precision,
+                );
+                let end_index = vertex_index(
+                    &mut vertices,
+                    &mut vertex_indexes,
+                    &mut adjacency,
+                    end,
+                    precision,
+                );
                 if start_index == end_index {
                     continue;
                 }
@@ -410,7 +423,7 @@ impl Arrangement {
     }
 
     fn polygonize_faces(&self, precision: PrecisionModel) -> Vec<Polygon> {
-        let mut visited = Vec::<(usize, usize)>::new();
+        let mut visited = HashSet::<(usize, usize)>::new();
         let mut polygons = Vec::new();
         let mut reversed_polygons = Vec::new();
 
@@ -469,7 +482,12 @@ impl Arrangement {
         }
     }
 
-    fn walk_face(&self, start: usize, end: usize, visited: &mut Vec<(usize, usize)>) -> Vec<usize> {
+    fn walk_face(
+        &self,
+        start: usize,
+        end: usize,
+        visited: &mut HashSet<(usize, usize)>,
+    ) -> Vec<usize> {
         let mut ring = Vec::new();
         let mut current_start = start;
         let mut current_end = end;
@@ -485,7 +503,7 @@ impl Arrangement {
                 break;
             }
 
-            visited.push((current_start, current_end));
+            visited.insert((current_start, current_end));
             ring.push(current_start);
 
             let Some(next) = self.next_face_vertex(current_start, current_end) else {
@@ -513,19 +531,28 @@ impl Arrangement {
 
 fn vertex_index(
     vertices: &mut Vec<Coord>,
+    vertex_indexes: &mut HashMap<CoordKey, usize>,
     adjacency: &mut Vec<Vec<usize>>,
     coord: Coord,
     precision: PrecisionModel,
 ) -> usize {
-    if let Some(index) = vertices
-        .iter()
-        .position(|existing| precision.same_coord(*existing, coord))
-    {
+    let snapped = precision.snap_coord(coord);
+    let key = CoordKey::new(snapped);
+    if let Some(index) = vertex_indexes.get(&key).copied() {
         return index;
     }
 
-    vertices.push(precision.snap_coord(coord));
+    if let Some(index) = vertices
+        .iter()
+        .position(|existing| precision.same_coord(*existing, snapped))
+    {
+        vertex_indexes.insert(key, index);
+        return index;
+    }
+
+    vertices.push(snapped);
     adjacency.push(Vec::new());
+    vertex_indexes.insert(key, vertices.len() - 1);
     vertices.len() - 1
 }
 
@@ -539,8 +566,8 @@ fn edge_angle(origin: Coord, target: Coord) -> f64 {
     (target.y - origin.y).atan2(target.x - origin.x)
 }
 
-fn directed_edge_seen(visited: &[(usize, usize)], start: usize, end: usize) -> bool {
-    visited.iter().any(|edge| edge.0 == start && edge.1 == end)
+fn directed_edge_seen(visited: &HashSet<(usize, usize)>, start: usize, end: usize) -> bool {
+    visited.contains(&(start, end))
 }
 
 fn normalize_zero(value: f64) -> f64 {

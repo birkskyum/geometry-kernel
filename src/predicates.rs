@@ -118,6 +118,10 @@ pub fn segment_intersection(
     b2: Coord,
     precision: PrecisionModel,
 ) -> Option<SegmentIntersection> {
+    if segment_bboxes_disjoint(a1, a2, b1, b2, precision) {
+        return None;
+    }
+
     let o1 = orientation(a1, a2, b1);
     let o2 = orientation(a1, a2, b2);
     let o3 = orientation(b1, b2, a1);
@@ -161,17 +165,35 @@ fn cross(a: Coord, b: Coord) -> f64 {
 }
 
 fn orientation_epsilon(a: Coord, b: Coord, c: Coord, precision: PrecisionModel) -> f64 {
-    let ab = a.distance(b);
-    let ac = a.distance(c);
+    let ab = l1_distance(a, b);
+    let ac = l1_distance(a, c);
     precision.epsilon() * (ab + ac).max(f64::EPSILON)
 }
 
 fn cross_epsilon(a: Coord, b: Coord, precision: PrecisionModel) -> f64 {
-    precision.epsilon() * (vector_length(a) + vector_length(b)).max(f64::EPSILON)
+    precision.epsilon() * (l1_vector_length(a) + l1_vector_length(b)).max(f64::EPSILON)
 }
 
-fn vector_length(vector: Coord) -> f64 {
-    (vector.x * vector.x + vector.y * vector.y).sqrt()
+fn l1_distance(a: Coord, b: Coord) -> f64 {
+    (a.x - b.x).abs() + (a.y - b.y).abs()
+}
+
+fn l1_vector_length(vector: Coord) -> f64 {
+    vector.x.abs() + vector.y.abs()
+}
+
+fn segment_bboxes_disjoint(
+    a1: Coord,
+    a2: Coord,
+    b1: Coord,
+    b2: Coord,
+    precision: PrecisionModel,
+) -> bool {
+    let eps = precision.epsilon();
+    a1.x.min(a2.x) > b1.x.max(b2.x) + eps
+        || b1.x.min(b2.x) > a1.x.max(a2.x) + eps
+        || a1.y.min(a2.y) > b1.y.max(b2.y) + eps
+        || b1.y.min(b2.y) > a1.y.max(a2.y) + eps
 }
 
 fn orientation_sign(value: f64, epsilon: f64) -> i8 {

@@ -1,6 +1,6 @@
 [package]
 name = "geometry-kernel"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2021"
 authors = ["Birk Skyum <birk.skyum@pm.me>"]
 description = "A Rust-first geometry kernel for deterministic planar geometry operations"
